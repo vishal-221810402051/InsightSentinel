@@ -2,51 +2,56 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from pydantic import BaseModel, Field
+from typing import Optional
+
+from pydantic import BaseModel, ConfigDict
 
 
-class DatasetColumnCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=200)
-    dtype: str = Field(..., min_length=1, max_length=100)
-    null_count: int | None = None
-    distinct_count: int | None = None
+class ColumnStatisticsOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
 
-
-class DatasetCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=200)
-    description: str | None = None
-    row_count: int | None = None
-    column_count: int | None = None
-    columns: list[DatasetColumnCreate] = Field(default_factory=list)
+    id: uuid.UUID
+    mean: Optional[float] = None
+    std: Optional[float] = None
+    min: Optional[float] = None
+    max: Optional[float] = None
+    outlier_count: Optional[int] = None
+    outlier_ratio: Optional[float] = None
+    created_at: Optional[datetime] = None
 
 
 class DatasetColumnOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     name: str
     dtype: str
-    null_count: int | None
-    distinct_count: int | None
-
-    model_config = {"from_attributes": True}
-
-
-class DatasetOut(BaseModel):
-    id: uuid.UUID
-    name: str
-    description: str | None
-    row_count: int | None
-    column_count: int | None
+    null_count: int
+    distinct_count: int
     created_at: datetime
-    columns: list[DatasetColumnOut] = Field(default_factory=list)
 
-    model_config = {"from_attributes": True}
+    statistics: Optional[ColumnStatisticsOut] = None
 
 
 class DatasetListOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: uuid.UUID
     name: str
-    row_count: int | None
-    column_count: int | None
+    description: str = ""
+    row_count: int
+    column_count: int
     created_at: datetime
 
-    model_config = {"from_attributes": True}
+
+class DatasetOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    description: str = ""
+    row_count: int
+    column_count: int
+    created_at: datetime
+
+    columns: list[DatasetColumnOut] = []

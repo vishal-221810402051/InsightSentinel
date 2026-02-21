@@ -5,17 +5,77 @@ from io import BytesIO
 from typing import Any
 import time
 import logging
+import math
 
 import pandas as pd
+from pandas.api.types import is_numeric_dtype
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.models import Dataset, DatasetColumn, IngestionRun
+from app.models import Dataset, DatasetColumn, IngestionRun, ColumnStatistics
 
 logger = logging.getLogger("insightsentinel")
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
+
+
+def _safe_float(x: Any) -> float | None:
+    """Convert numpy/pandas scalars to plain float, returning None for NaN/inf."""
+    if x is None:
+        return None
+    try:
+        v = float(x)
+        if math.isnan(v) or math.isinf(v):
+            return None
+        return v
+    except Exception:
+        return None
+
+
+def _compute_numeric_stats(s: pd.Series) -> dict[str, Any] | None:
+    """
+    Compute mean/std/min/max + IQR outliers for a numeric series.
+    Returns None if not enough numeric data.
+    """
+    # Drop NaNs
+    x = s.dropna()
+    if x.empty:
+        return None
+
+    # Need at least 2 points for std; for outliers IQR works better with >= 4
+    mean_v = _safe_float(x.mean())
+    std_v = _safe_float(x.std(ddof=1)) if len(x) >= 2 else None
+    min_v = _safe_float(x.min())
+    max_v = _safe_float(x.max())
+
+    outlier_count = None
+    outlier_ratio = None
+
+    if len(x) >= 4:
+        q1 = _safe_float(x.quantile(0.25))
+        q3 = _safe_float(x.quantile(0.75))
+        if q1 is not None and q3 is not None:
+            iqr = q3 - q1
+            # If iqr == 0, all values essentially same -> no outliers
+            if iqr > 0:
+                lower = q1 - 1.5 * iqr
+                upper = q3 + 1.5 * iqr
+                oc = int(((x < lower) | (x > upper)).sum())
+                outlier_count = oc
+                outlier_ratio = _safe_float(oc / len(x)) if len(x) > 0 else None
+            else:
+                outlier_count = 0
+                outlier_ratio = 0.0
+
+    return {
+        "mean": mean_v,
+        "std": std_v,
+        "min": min_v,
+        "max": max_v,
+        "outlier_count": outlier_count,
+        "outlier_ratio": outlier_ratio,
+    }
 
 
 @router.post("/csv")
@@ -28,12 +88,10 @@ async def ingest_csv(
     started_wall = datetime.now(timezone.utc)
     started_mono = time.monotonic()
 
-    # STEP 0: read file
     raw = await file.read()
     if not raw:
         raise HTTPException(status_code=400, detail="Empty file")
 
-    # STEP 1: parse CSV
     try:
         df = pd.read_csv(BytesIO(raw))
     except Exception as e:
@@ -45,7 +103,7 @@ async def ingest_csv(
     row_count = int(df.shape[0])
     column_count = int(df.shape[1])
 
-    # STEP 2: create dataset
+    # STEP 1: create dataset
     dataset = Dataset(
         name=dataset_name,
         description=description,
@@ -55,7 +113,7 @@ async def ingest_csv(
     db.add(dataset)
     db.flush()  # dataset.id available
 
-    # STEP 3: create run (persist early so failures still get recorded)
+    # STEP 2: create run early
     run = IngestionRun(
         dataset_id=dataset.id,
         status="created",
@@ -67,7 +125,6 @@ async def ingest_csv(
     db.refresh(dataset)
     db.refresh(run)
 
-    # STEP 4+: profiling lifecycle
     try:
         # move to profiling
         run.status = "profiling"
@@ -76,23 +133,40 @@ async def ingest_csv(
         db.commit()
         db.refresh(run)
 
-        # create dataset columns
+        # STEP 3: create columns + stats
         for col in df.columns:
             s = df[col]
+
             null_count = int(s.isna().sum())
             distinct_count = int(s.dropna().astype(str).nunique())
 
-            db.add(
-                DatasetColumn(
-                    dataset_id=dataset.id,
-                    name=str(col),
-                    dtype=str(s.dtype),
-                    null_count=null_count,
-                    distinct_count=distinct_count,
-                )
+            col_obj = DatasetColumn(
+                dataset_id=dataset.id,
+                name=str(col),
+                dtype=str(s.dtype),
+                null_count=null_count,
+                distinct_count=distinct_count,
             )
+            db.add(col_obj)
+            db.flush()  # col_obj.id available
 
-        # finalize
+            # Stats only for numeric columns
+            if is_numeric_dtype(s):
+                stats = _compute_numeric_stats(s)
+                if stats is not None:
+                    db.add(
+                        ColumnStatistics(
+                            column_id=col_obj.id,
+                            mean=stats["mean"],
+                            std=stats["std"],
+                            min=stats["min"],
+                            max=stats["max"],
+                            outlier_count=stats["outlier_count"],
+                            outlier_ratio=stats["outlier_ratio"],
+                        )
+                    )
+
+        # finalize run
         finished_wall = datetime.now(timezone.utc)
         duration_ms = int((time.monotonic() - started_mono) * 1000)
 
@@ -124,14 +198,16 @@ async def ingest_csv(
         finished_wall = datetime.now(timezone.utc)
         duration_ms = int((time.monotonic() - started_mono) * 1000)
 
-        # best-effort: record failure
-        run.status = "failed"
-        run.message = "Ingestion failed"
-        run.error_message = f"{type(e).__name__}: {e}"
-        run.completed_at = finished_wall
-        run.duration_ms = duration_ms
-
-        db.add(run)
-        db.commit()
+        # best-effort failure record
+        try:
+            run.status = "failed"
+            run.message = "Ingestion failed"
+            run.error_message = f"{type(e).__name__}: {e}"
+            run.completed_at = finished_wall
+            run.duration_ms = duration_ms
+            db.add(run)
+            db.commit()
+        except Exception:
+            db.rollback()
 
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {type(e).__name__}: {e}")

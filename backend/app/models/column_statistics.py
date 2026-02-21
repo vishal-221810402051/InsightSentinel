@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import uuid
-from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, func
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
-
+from sqlalchemy import Float
 
 from app.db.base import Base
 
@@ -19,6 +19,7 @@ class ColumnStatistics(Base):
         ForeignKey("dataset_columns.id", ondelete="CASCADE"),
         nullable=False,
         unique=True,
+        index=True,
     )
 
     mean = Column(Float, nullable=True)
@@ -27,8 +28,9 @@ class ColumnStatistics(Base):
     max = Column(Float, nullable=True)
 
     outlier_count = Column(Integer, nullable=True)
-    outlier_ratio = Column(Float, nullable=True)    
+    outlier_ratio = Column(Float, nullable=True)
 
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
+    # ✅ THIS WAS MISSING (and caused the crash)
     column = relationship("DatasetColumn", back_populates="statistics")

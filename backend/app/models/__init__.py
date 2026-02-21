@@ -1,2 +1,6 @@
-from app.models.dataset import Dataset, DatasetColumn  # noqa: F401
-from app.models.ingestion_run import IngestionRun      # noqa: F401
+from app.models.dataset import Dataset
+from app.models.dataset_column import DatasetColumn
+from app.models.ingestion_run import IngestionRun
+from app.models.column_statistics import ColumnStatistics
+
+__all__ = ["Dataset", "DatasetColumn", "IngestionRun", "ColumnStatistics"]
