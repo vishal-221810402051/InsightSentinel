@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+.env
+
+# VS Code
+.vscode/
+
+# Docker
+*.log
+
+# Alembic cache
+alembic/versions/__pycache__/
+
+# Streamlit
+.streamlit/
+
+# OS
+Thumbs.db
+.DS_Store
