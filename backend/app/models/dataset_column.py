@@ -21,4 +21,14 @@ class DatasetColumn(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
+    statistics = relationship(
+        "ColumnStatistics",
+        back_populates="column",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        uselist=False,
+    )
+
     dataset = relationship("Dataset", back_populates="columns")
+
+    
