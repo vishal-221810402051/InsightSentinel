@@ -21,3 +21,12 @@ alembic/versions/__pycache__/
 # OS
 Thumbs.db
 .DS_Store
+
+# local test datasets
+/skew.csv
+/high_card.csv
+/date_quality.csv
+/numeric_as_string.csv
+/outliers.csv
+/zero_range.csv
+/dup.csv
