@@ -155,6 +155,9 @@ def refresh_insights(db: Session, dataset_id) -> list[DatasetInsight]:
 
     # --- DUPLICATE_ROWS_IN_PREVIEW (dataset-level) ---
     if preview and preview.rows:
+        n = len(preview.rows)
+
+        # count duplicates using canonical representation
         seen = set()
         dup = 0
         for r in preview.rows:
@@ -164,15 +167,45 @@ def refresh_insights(db: Session, dataset_id) -> list[DatasetInsight]:
             else:
                 seen.add(key)
 
-        if dup > 0:
+        if dup > 0 and n > 0:
+            dup_ratio = dup / n
+
+            # detect "constant dimensions" (columns that have exactly 1 distinct non-null value in preview)
+            constant_cols = 0
+            if isinstance(preview.rows[0], dict):
+                keys = list(preview.rows[0].keys())
+                for k in keys:
+                    vals = []
+                    for r in preview.rows:
+                        if isinstance(r, dict):
+                            v = r.get(k)
+                            if v is not None and str(v).strip() != "":
+                                vals.append(str(v))
+                    if len(set(vals)) <= 1 and len(vals) > 0:
+                        constant_cols += 1
+
+            # severity decision
+            if constant_cols >= 2:
+                severity = "info"
+                msg_extra = f"Duplicates may be expected because {constant_cols} column(s) appear constant in preview."
+            else:
+                if dup_ratio < 0.05:
+                    severity = "info"
+                else:
+                    severity = "warning"
+                msg_extra = "Consider de-duplication rules or upstream export logic."
+
             insights.append(
                 DatasetInsight(
                     dataset_id=dataset.id,
-                    column_id=None,  # dataset-level insight
-                    severity="warning" if dup >= 1 else "info",
+                    column_id=None,
+                    severity=severity,
                     code="DUPLICATE_ROWS_IN_PREVIEW",
                     title="Duplicate rows detected (preview)",
-                    message=f"Found {dup} duplicate row(s) in the first {len(preview.rows)} preview rows. Consider de-duplication rules.",
+                    message=(
+                        f"Found {dup} duplicate row(s) in the first {n} preview rows "
+                        f"({dup_ratio:.0%}). {msg_extra}"
+                    ),
                 )
             )
 
