@@ -50,6 +50,8 @@ def _compute_numeric_stats(s: pd.Series) -> dict[str, Any] | None:
     std_v = _safe_float(x.std(ddof=1)) if len(x) >= 2 else None
     min_v = _safe_float(x.min())
     max_v = _safe_float(x.max())
+    skew_v = _safe_float(x.skew()) if len(x) >= 3 else None
+    kurt_v = _safe_float(x.kurt()) if len(x) >= 4 else None
 
     outlier_count = None
     outlier_ratio = None
@@ -77,6 +79,8 @@ def _compute_numeric_stats(s: pd.Series) -> dict[str, Any] | None:
         "max": max_v,
         "outlier_count": outlier_count,
         "outlier_ratio": outlier_ratio,
+        "skewness": skew_v,
+        "kurtosis": kurt_v,
     }
 
 
@@ -198,6 +202,8 @@ async def ingest_csv(
                             max=stats["max"],
                             outlier_count=stats["outlier_count"],
                             outlier_ratio=stats["outlier_ratio"],
+                            skewness=stats["skewness"],
+                            kurtosis=stats.get("kurtosis"),
                         )
                     )
 

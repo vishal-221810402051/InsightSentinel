@@ -29,6 +29,8 @@ class ColumnStatistics(Base):
 
     outlier_count = Column(Integer, nullable=True)
     outlier_ratio = Column(Float, nullable=True)
+    skewness = Column(Float, nullable=True)
+    kurtosis = Column(Float, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
