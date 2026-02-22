@@ -1,7 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
-from typing import List
+import re
+from typing import Any, List, Optional
 
 from sqlalchemy.orm import Session, joinedload
 
@@ -9,10 +10,48 @@ from app.models import ColumnStatistics, Dataset, DatasetColumn
 from app.models.dataset_insight import DatasetInsight
 from app.models.dataset_preview import DatasetPreview
 
+_NUM_RE = re.compile(r"^[\s\+\-]?(?:\d+\.?\d*|\.\d+)(?:[eE][\+\-]?\d+)?\s*$")
+
 
 def _canonical_row(r: dict) -> str:
     # stable JSON string for hashing
     return json.dumps(r, sort_keys=True, default=str, ensure_ascii=False)
+
+
+def _to_float_like(v: Any) -> Optional[float]:
+    """
+    Try to parse a value into float in a tolerant way:
+    - supports "1,234.56" (commas removed)
+    - supports "\u20ac123" / "$123" (currency stripped)
+    - rejects empty/None
+    """
+    if v is None:
+        return None
+
+    # Already numeric
+    if isinstance(v, (int, float)) and not (isinstance(v, float) and (v != v)):  # NaN check
+        return float(v)
+
+    s = str(v).strip()
+    if not s:
+        return None
+
+    # Remove common currency/percent symbols and spaces
+    s = s.replace(",", "")
+    s = s.replace("%", "")
+    s = s.replace("\u20ac", "").replace("$", "").replace("\u00a3", "")
+
+    if not _NUM_RE.match(s):
+        return None
+
+    try:
+        f = float(s)
+        # reject NaN/inf
+        if f != f or f == float("inf") or f == float("-inf"):
+            return None
+        return f
+    except Exception:
+        return None
 
 
 def _is_date_like_name(name: str) -> bool:
@@ -37,13 +76,19 @@ def refresh_insights(db: Session, dataset_id) -> list[DatasetInsight]:
     if not dataset:
         return []
 
+    preview = (
+        db.query(DatasetPreview)
+        .filter(DatasetPreview.dataset_id == dataset_id)
+        .first()
+    )
+    preview_rows = preview.rows if preview else []
+
     insights: List[DatasetInsight] = []
 
     # clear old insights (idempotent refresh)
     db.query(DatasetInsight).filter(DatasetInsight.dataset_id == dataset_id).delete()
 
     # --- DUPLICATE_ROWS_IN_PREVIEW (dataset-level) ---
-    preview = db.query(DatasetPreview).filter(DatasetPreview.dataset_id == dataset_id).first()
     if preview and preview.rows:
         seen = set()
         dup = 0
@@ -109,8 +154,44 @@ def refresh_insights(db: Session, dataset_id) -> list[DatasetInsight]:
                 )
             )
 
+        numeric_as_string_detected = False
+
+        # --- POTENTIAL_NUMERIC_AS_STRING (type integrity) ---
+        # Use preview rows to see if values are mostly numeric but stored as object/string.
+        if preview_rows and _is_categorical_dtype(col.dtype) and not _is_date_like_name(col.name):
+            vals = []
+            for r in preview_rows:
+                if isinstance(r, dict) and col.name in r:
+                    vals.append(r.get(col.name))
+
+            non_null = [v for v in vals if v is not None and str(v).strip() != ""]
+
+            # Noise gate: need enough evidence (small datasets should still work)
+            if len(non_null) >= 3:
+                parsed = [_to_float_like(v) for v in non_null]
+                ok = [p for p in parsed if p is not None]
+                ratio = len(ok) / len(non_null) if non_null else 0.0
+
+                if ratio >= 0.80:
+                    numeric_as_string_detected = True
+                    insights.append(
+                        DatasetInsight(
+                            dataset_id=dataset.id,
+                            column_id=col.id,
+                            severity="warning",
+                            code="POTENTIAL_NUMERIC_AS_STRING",
+                            title="Numeric values stored as text",
+                            message=(
+                                f"Column '{col.name}' is stored as '{col.dtype}' but "
+                                f"{len(ok)}/{len(non_null)} preview values ({ratio:.0%}) parse as numbers. "
+                                "Consider casting/cleaning (remove separators/currency) to enable numeric analytics."
+                            ),
+                        )
+                    )
+
         # --- LOW_CARDINALITY ---
-        if row_count > 0:
+        # Only add this if the column is NOT likely numeric-as-string (otherwise it's misleading)
+        if row_count > 0 and not numeric_as_string_detected:
             dc = int(col.distinct_count or 0)
             if (
                 _is_categorical_dtype(col.dtype)
