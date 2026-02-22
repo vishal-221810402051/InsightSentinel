@@ -7,6 +7,7 @@ from app.core.config import get_settings
 from app.core.logging import setup_logging
 from app.api.routes.datasets import router as datasets_router
 from app.api.routes.ingest import router as ingest_router
+from app.api.routes.insights import router as insights_router
 from app.api.routes.runs import router as runs_router
 
 settings = get_settings()
@@ -22,6 +23,7 @@ app = FastAPI(
 
 app.include_router(datasets_router)
 app.include_router(ingest_router)
+app.include_router(insights_router)
 app.include_router(runs_router, prefix="/runs", tags=["runs"])
 
 @app.get("/health")

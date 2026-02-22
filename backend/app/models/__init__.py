@@ -3,5 +3,6 @@ from app.models.dataset_column import DatasetColumn
 from app.models.ingestion_run import IngestionRun
 from app.models.column_statistics import ColumnStatistics
 from app.models.dataset_preview import DatasetPreview
+from app.models.dataset_insight import DatasetInsight
 
-__all__ = ["Dataset", "DatasetColumn", "IngestionRun", "ColumnStatistics", "DatasetPreview"]
+__all__ = ["Dataset", "DatasetColumn", "IngestionRun", "ColumnStatistics", "DatasetPreview", "DatasetInsight"]
