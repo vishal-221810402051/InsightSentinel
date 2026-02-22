@@ -11,13 +11,15 @@ import pandas as pd
 from pandas.api.types import is_numeric_dtype
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
+from app.models import Dataset, DatasetColumn, IngestionRun, ColumnStatistics
+from app.models.dataset_preview import DatasetPreview
 
 from app.db.session import get_db
-from app.models import Dataset, DatasetColumn, IngestionRun, ColumnStatistics
 
 logger = logging.getLogger("insightsentinel")
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
+PREVIEW_ROWS = 50
 
 
 def _safe_float(x: Any) -> float | None:
@@ -112,6 +114,39 @@ async def ingest_csv(
     )
     db.add(dataset)
     db.flush()  # dataset.id available
+
+    # PREVIEW: persist first N rows now (JSON-safe: no NaN/Infinity)
+    preview_df = df.head(PREVIEW_ROWS).copy()
+
+    # Convert pandas/NumPy scalars -> plain python types and replace NaN/Inf -> None
+    preview_rows: list[dict[str, Any]] = []
+    for rec in preview_df.to_dict(orient="records"):
+        clean: dict[str, Any] = {}
+        for k, v in rec.items():
+            if v is None:
+                clean[k] = None
+                continue
+
+            # pandas missing values
+            if pd.isna(v):
+                clean[k] = None
+                continue
+
+            # convert numpy scalars to python scalars
+            if hasattr(v, "item"):
+                try:
+                    v = v.item()
+                except Exception:
+                    pass
+
+            # disallow NaN/Inf (can appear after .item())
+            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                clean[k] = None
+            else:
+                clean[k] = v
+        preview_rows.append(clean)
+
+    db.add(DatasetPreview(dataset_id=dataset.id, rows=preview_rows))
 
     # STEP 2: create run early
     run = IngestionRun(

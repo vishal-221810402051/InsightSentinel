@@ -34,3 +34,11 @@ class Dataset(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+
+    preview = relationship(
+        "DatasetPreview",
+        back_populates="dataset",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        uselist=False,
+    )
