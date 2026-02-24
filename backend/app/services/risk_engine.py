@@ -73,6 +73,9 @@ RISK_SPIKE_WARNING_THRESHOLD = 10
 RISK_SPIKE_CRITICAL_THRESHOLD = 20
 RISK_SPIKE_COOLDOWN_MINUTES = 60
 
+# --- Risk smoothing config ---
+RISK_EMA_ALPHA = 0.3
+
 
 def compute_dataset_risk(db: Session, dataset_id) -> Optional[RiskScoreResult]:
     ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
@@ -326,8 +329,8 @@ def track_dataset_risk(db: Session, dataset_id) -> Optional[DatasetRiskHistory |
     if res is None:
         return None
 
-    current_score = int(res.dataset_risk_score)
-    current_level = str(res.risk_level)
+    raw_score = int(res.dataset_risk_score)
+    risk_level = str(res.risk_level)
     breakdown = res.breakdown
 
     last = (
@@ -337,29 +340,68 @@ def track_dataset_risk(db: Session, dataset_id) -> Optional[DatasetRiskHistory |
         .first()
     )
 
+    if last and last.smoothed_score is not None:
+        previous_smoothed = int(last.smoothed_score)
+    else:
+        previous_smoothed = raw_score  # initialize baseline
+
+    smoothed_score = int(
+        RISK_EMA_ALPHA * raw_score
+        + (1 - RISK_EMA_ALPHA) * previous_smoothed
+    )
+
     if last:
-        if last.risk_score == current_score and last.risk_level == current_level:
+        if last.risk_score == raw_score and last.risk_level == risk_level:
             logger.info(
                 "Risk unchanged - skipping history insert",
                 extra={"dataset_id": str(dataset_id)},
             )
             return {
                 "dataset_id": str(dataset_id),
-                "risk_score": current_score,
-                "risk_level": current_level,
+                "risk_score": raw_score,
+                "risk_level": risk_level,
                 "breakdown": breakdown,
+                "smoothed_score": int(last.smoothed_score) if last.smoothed_score is not None else smoothed_score,
+                "alpha": float(last.alpha) if last.alpha is not None else float(RISK_EMA_ALPHA),
                 "skipped": True,
             }
 
     # Fetch previous snapshot BEFORE inserting new one
     prev = last
 
+    delta_score = None
+    accel_score = None
+
+    if prev and prev.smoothed_score is not None:
+        delta_score = float(smoothed_score) - float(prev.smoothed_score)
+
+        # fetch previous-previous snapshot
+        prev2 = (
+            db.query(DatasetRiskHistory)
+            .filter(DatasetRiskHistory.dataset_id == dataset_id)
+            .order_by(DatasetRiskHistory.created_at.desc())
+            .offset(1)
+            .first()
+        )
+
+        if (
+            prev2
+            and prev2.smoothed_score is not None
+            and prev.smoothed_score is not None
+        ):
+            prev_velocity = float(prev.smoothed_score) - float(prev2.smoothed_score)
+            accel_score = float(delta_score) - float(prev_velocity)
+
     # Insert new snapshot
     snap = DatasetRiskHistory(
         dataset_id=dataset_id,
-        risk_score=current_score,
-        risk_level=current_level,
+        risk_score=raw_score,
+        risk_level=risk_level,
         breakdown=breakdown,
+        smoothed_score=smoothed_score,
+        alpha=RISK_EMA_ALPHA,
+        delta_score=delta_score,
+        accel_score=accel_score,
     )
     db.add(snap)
     db.commit()
@@ -367,7 +409,7 @@ def track_dataset_risk(db: Session, dataset_id) -> Optional[DatasetRiskHistory |
 
     # --- Risk Spike Detection ---
     if prev is not None:
-        delta = int(res.dataset_risk_score) - int(prev.risk_score)
+        delta = raw_score - int(prev.risk_score)
 
         if delta >= RISK_SPIKE_WARNING_THRESHOLD:
             if not _risk_spike_cooldown_exists(db, dataset_id):
@@ -383,18 +425,48 @@ def track_dataset_risk(db: Session, dataset_id) -> Optional[DatasetRiskHistory |
                         title="Risk spike detected",
                         message=(
                             f"Risk score increased from {prev.risk_score} "
-                            f"to {res.dataset_risk_score} (Δ={delta})."
+                            f"to {raw_score} (delta={delta})."
                         ),
                         payload={
                             "type": "RISK_SPIKE",
                             "previous_score": int(prev.risk_score),
-                            "new_score": int(res.dataset_risk_score),
+                            "new_score": int(raw_score),
                             "delta": int(delta),
                             "previous_level": prev.risk_level,
-                            "new_level": res.risk_level,
+                            "new_level": risk_level,
                         },
                     )
                 )
                 db.commit()
 
+    # --- Risk Acceleration Detection ---
+    if (
+        delta_score is not None
+        and accel_score is not None
+        and smoothed_score >= 25
+        and delta_score >= 3
+        and accel_score >= 2
+    ):
+        if not _risk_spike_cooldown_exists(db, dataset_id):
+            db.add(
+                AlertEvent(
+                    dataset_id=dataset_id,
+                    rule_id=None,
+                    severity="warning",
+                    title="Risk acceleration detected",
+                    message=(
+                        f"Risk accelerating: velocity={delta_score:.2f}, "
+                        f"acceleration={accel_score:.2f}."
+                    ),
+                    payload={
+                        "type": "RISK_ACCELERATION",
+                        "velocity": delta_score,
+                        "acceleration": accel_score,
+                        "smoothed_score": smoothed_score,
+                    },
+                )
+            )
+            db.commit()
+
     return snap
+
