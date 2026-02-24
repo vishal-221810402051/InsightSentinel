@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     # SQLAlchemy
     sqlalchemy_echo: bool = False
 
+    # Scheduler
+    enable_scheduler: bool = True
+    scheduler_interval_minutes: int = 10
+
     @property
     def postgres_dsn(self) -> str:
         # SQLAlchemy DSN (psycopg3)

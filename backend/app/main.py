@@ -13,6 +13,7 @@ from app.api.routes.alerts import router as alerts_router
 from app.api.routes.alerts_eval import router as alerts_eval_router
 from app.api.routes.alerts_suggest import router as alerts_suggest_router
 from app.api.routes.risk import router as risk_router
+from app.services.scheduler import start_scheduler, shutdown_scheduler
 
 settings = get_settings()
 setup_logging(settings.log_level)
@@ -33,6 +34,17 @@ app.include_router(alerts_router)
 app.include_router(alerts_eval_router)
 app.include_router(alerts_suggest_router)
 app.include_router(risk_router)
+
+
+@app.on_event("startup")
+def on_startup():
+    start_scheduler()
+
+
+@app.on_event("shutdown")
+def on_shutdown():
+    shutdown_scheduler()
+
 
 @app.get("/health")
 def health() -> dict[str, str]:

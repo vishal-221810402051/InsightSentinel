@@ -6,6 +6,7 @@ from app.models.dataset_preview import DatasetPreview
 from app.models.dataset_insight import DatasetInsight
 from app.models.alert_rule import AlertRule
 from app.models.alert_event import AlertEvent
+from app.models.dataset_risk_history import DatasetRiskHistory
 
 __all__ = [
     "Dataset",
@@ -16,4 +17,5 @@ __all__ = [
     "DatasetInsight",
     "AlertRule",
     "AlertEvent",
+    "DatasetRiskHistory",
 ]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import logging
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -9,6 +10,9 @@ from sqlalchemy.orm import Session
 from app.models import Dataset, DatasetColumn, DatasetInsight
 from app.models.alert_event import AlertEvent
 from app.models.column_statistics import ColumnStatistics
+from app.models.dataset_risk_history import DatasetRiskHistory
+
+logger = logging.getLogger("insightsentinel.risk")
 
 
 @dataclass
@@ -63,6 +67,11 @@ MAX_INSIGHT_SCORE = 40
 MAX_STAT_SCORE = 30
 MAX_ALERT_SCORE = 20
 MAX_STRUCT_SCORE = 10
+
+# --- Risk spike config ---
+RISK_SPIKE_WARNING_THRESHOLD = 10
+RISK_SPIKE_CRITICAL_THRESHOLD = 20
+RISK_SPIKE_COOLDOWN_MINUTES = 60
 
 
 def compute_dataset_risk(db: Session, dataset_id) -> Optional[RiskScoreResult]:
@@ -267,3 +276,125 @@ def compute_dataset_risk(db: Session, dataset_id) -> Optional[RiskScoreResult]:
         },
         top_risks=top_risks,
     )
+
+
+def _risk_spike_cooldown_exists(db: Session, dataset_id) -> bool:
+    cutoff = _now() - timedelta(minutes=RISK_SPIKE_COOLDOWN_MINUTES)
+    q = (
+        db.query(AlertEvent)
+        .filter(AlertEvent.dataset_id == dataset_id)
+        .filter(AlertEvent.created_at >= cutoff)
+        .filter(AlertEvent.title == "Risk spike detected")
+    )
+    return db.query(q.exists()).scalar() is True
+
+
+def _get_latest_signal_timestamp(db: Session, dataset_id):
+    from app.models.alert_event import AlertEvent as SignalAlertEvent
+    from app.models.dataset_insight import DatasetInsight
+    from app.models.ingestion_run import IngestionRun
+
+    latest_run = (
+        db.query(IngestionRun.created_at)
+        .filter(IngestionRun.dataset_id == dataset_id)
+        .order_by(IngestionRun.created_at.desc())
+        .limit(1)
+        .scalar()
+    )
+
+    latest_insight = (
+        db.query(DatasetInsight.created_at)
+        .filter(DatasetInsight.dataset_id == dataset_id)
+        .order_by(DatasetInsight.created_at.desc())
+        .limit(1)
+        .scalar()
+    )
+
+    latest_alert = (
+        db.query(SignalAlertEvent.created_at)
+        .filter(SignalAlertEvent.dataset_id == dataset_id)
+        .order_by(SignalAlertEvent.created_at.desc())
+        .limit(1)
+        .scalar()
+    )
+
+    return max(filter(None, [latest_run, latest_insight, latest_alert]), default=None)
+
+
+def track_dataset_risk(db: Session, dataset_id) -> Optional[DatasetRiskHistory | dict[str, Any]]:
+    res = compute_dataset_risk(db, dataset_id)
+    if res is None:
+        return None
+
+    current_score = int(res.dataset_risk_score)
+    current_level = str(res.risk_level)
+    breakdown = res.breakdown
+
+    last = (
+        db.query(DatasetRiskHistory)
+        .filter(DatasetRiskHistory.dataset_id == dataset_id)
+        .order_by(DatasetRiskHistory.created_at.desc())
+        .first()
+    )
+
+    if last:
+        if last.risk_score == current_score and last.risk_level == current_level:
+            logger.info(
+                "Risk unchanged - skipping history insert",
+                extra={"dataset_id": str(dataset_id)},
+            )
+            return {
+                "dataset_id": str(dataset_id),
+                "risk_score": current_score,
+                "risk_level": current_level,
+                "breakdown": breakdown,
+                "skipped": True,
+            }
+
+    # Fetch previous snapshot BEFORE inserting new one
+    prev = last
+
+    # Insert new snapshot
+    snap = DatasetRiskHistory(
+        dataset_id=dataset_id,
+        risk_score=current_score,
+        risk_level=current_level,
+        breakdown=breakdown,
+    )
+    db.add(snap)
+    db.commit()
+    db.refresh(snap)
+
+    # --- Risk Spike Detection ---
+    if prev is not None:
+        delta = int(res.dataset_risk_score) - int(prev.risk_score)
+
+        if delta >= RISK_SPIKE_WARNING_THRESHOLD:
+            if not _risk_spike_cooldown_exists(db, dataset_id):
+                severity = "warning"
+                if delta >= RISK_SPIKE_CRITICAL_THRESHOLD:
+                    severity = "critical"
+
+                db.add(
+                    AlertEvent(
+                        dataset_id=dataset_id,
+                        rule_id=None,
+                        severity=severity,
+                        title="Risk spike detected",
+                        message=(
+                            f"Risk score increased from {prev.risk_score} "
+                            f"to {res.dataset_risk_score} (Δ={delta})."
+                        ),
+                        payload={
+                            "type": "RISK_SPIKE",
+                            "previous_score": int(prev.risk_score),
+                            "new_score": int(res.dataset_risk_score),
+                            "delta": int(delta),
+                            "previous_level": prev.risk_level,
+                            "new_level": res.risk_level,
+                        },
+                    )
+                )
+                db.commit()
+
+    return snap
