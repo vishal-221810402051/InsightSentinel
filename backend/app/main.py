@@ -9,6 +9,9 @@ from app.api.routes.datasets import router as datasets_router
 from app.api.routes.ingest import router as ingest_router
 from app.api.routes.insights import router as insights_router
 from app.api.routes.runs import router as runs_router
+from app.api.routes.alerts import router as alerts_router
+from app.api.routes.alerts_eval import router as alerts_eval_router
+from app.api.routes.alerts_suggest import router as alerts_suggest_router
 
 settings = get_settings()
 setup_logging(settings.log_level)
@@ -25,6 +28,9 @@ app.include_router(datasets_router)
 app.include_router(ingest_router)
 app.include_router(insights_router)
 app.include_router(runs_router, prefix="/runs", tags=["runs"])
+app.include_router(alerts_router)
+app.include_router(alerts_eval_router)
+app.include_router(alerts_suggest_router)
 
 @app.get("/health")
 def health() -> dict[str, str]:
