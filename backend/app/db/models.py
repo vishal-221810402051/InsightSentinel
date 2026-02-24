@@ -10,3 +10,5 @@ from app.models.ingestion_run import IngestionRun  # noqa: F401
 from app.models.column_statistics import ColumnStatistics  # noqa: F401
 from app.models.dataset_preview import DatasetPreview  # noqa: F401
 from app.models.dataset_insight import DatasetInsight  # noqa: F401
+from app.models.alert_rule import AlertRule  # noqa: F401
+from app.models.alert_event import AlertEvent  # noqa: F401

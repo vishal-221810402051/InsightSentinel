@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 from app.models import Dataset, DatasetColumn, IngestionRun, ColumnStatistics
 from app.models.dataset_preview import DatasetPreview
+from app.services.alert_engine import evaluate_dataset_rules
 
 from app.db.session import get_db
 
@@ -221,6 +222,14 @@ async def ingest_csv(
         db.commit()
         db.refresh(run)
 
+        alerts_created = 0
+        try:
+            summary = evaluate_dataset_rules(db, dataset.id)
+            alerts_created = int(summary.created_events)
+        except Exception:
+            db.rollback()
+            logger.exception("Alert rule evaluation failed after ingestion for dataset_id=%s", dataset.id)
+
         return {
             "dataset_id": str(dataset.id),
             "run_id": str(run.id),
@@ -231,6 +240,7 @@ async def ingest_csv(
             "status": run.status,
             "message": run.message,
             "duration_ms": run.duration_ms,
+            "alerts_created": alerts_created,
         }
 
     except Exception as e:
