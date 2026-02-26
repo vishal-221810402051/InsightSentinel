@@ -8,7 +8,7 @@ from app.models.alert_rule import AlertRule
 from app.models.alert_event import AlertEvent
 from app.models.dataset_risk_history import DatasetRiskHistory
 from app.models.dataset_anomaly_event import DatasetAnomalyEvent
-
+from app.models.user import User
 __all__ = [
     "Dataset",
     "DatasetColumn",
@@ -20,4 +20,6 @@ __all__ = [
     "AlertEvent",
     "DatasetRiskHistory",
     "DatasetAnomalyEvent",
+    "User",
 ]
+

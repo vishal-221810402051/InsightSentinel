@@ -11,8 +11,10 @@ import pandas as pd
 from pandas.api.types import is_numeric_dtype
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
+from app.api.deps import get_current_user
 from app.models import Dataset, DatasetColumn, IngestionRun, ColumnStatistics
 from app.models.dataset_preview import DatasetPreview
+from app.models.user import User
 from app.services.alert_engine import evaluate_dataset_rules
 
 from app.db.session import get_db
@@ -91,6 +93,7 @@ async def ingest_csv(
     description: str = Form(""),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
     started_wall = datetime.now(timezone.utc)
     started_mono = time.monotonic()
@@ -116,6 +119,7 @@ async def ingest_csv(
         description=description,
         row_count=row_count,
         column_count=column_count,
+        user_id=current_user.id,
     )
     db.add(dataset)
     db.flush()  # dataset.id available

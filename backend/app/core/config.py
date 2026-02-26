@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     backend_host: str = "0.0.0.0"
     backend_port: int = 8000
     log_level: str = "INFO"
+    jwt_secret: str = "change_me_to_a_long_random_string"
 
     # SQLAlchemy
     sqlalchemy_echo: bool = False

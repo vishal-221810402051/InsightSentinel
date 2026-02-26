@@ -14,6 +14,7 @@ from app.api.routes.alerts import router as alerts_router
 from app.api.routes.alerts_eval import router as alerts_eval_router
 from app.api.routes.alerts_suggest import router as alerts_suggest_router
 from app.api.routes.anomalies import router as anomalies_router
+from app.api.routes.auth import router as auth_router
 from app.api.routes.health import router as health_router
 from app.api.routes.portfolio import router as portfolio_router
 from app.api.routes.risk import router as risk_router
@@ -49,6 +50,7 @@ app.include_router(alerts_router)
 app.include_router(alerts_eval_router)
 app.include_router(alerts_suggest_router)
 app.include_router(anomalies_router)
+app.include_router(auth_router)
 app.include_router(health_router)
 app.include_router(portfolio_router)
 app.include_router(risk_router)
