@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import json
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -75,6 +76,16 @@ RISK_SPIKE_COOLDOWN_MINUTES = 60
 
 # --- Risk smoothing config ---
 RISK_EMA_ALPHA = 0.3
+RISK_TRACK_INTERVAL_MINUTES = 10
+RISK_ALPHA_MIN = 0.05
+RISK_ALPHA_MAX = 0.80
+RISK_STALE_AFTER_MINUTES = 60
+RISK_DECAY_PER_INTERVAL = 0.06
+RISK_TRACK_DEDUP_WINDOW_MINUTES = 5
+
+
+def _stable_json(obj) -> str:
+    return json.dumps(obj or {}, sort_keys=True, default=str, ensure_ascii=False)
 
 
 def compute_dataset_risk(db: Session, dataset_id) -> Optional[RiskScoreResult]:
@@ -281,6 +292,68 @@ def compute_dataset_risk(db: Session, dataset_id) -> Optional[RiskScoreResult]:
     )
 
 
+def compute_dataset_health(db: Session, dataset_id) -> Optional[dict[str, Any]]:
+    """
+    Health is the business-facing inverse of smoothed risk.
+    Returns score + helper fields for UI.
+    """
+    risk_result = compute_dataset_risk(db, dataset_id)
+    if risk_result is None:
+        return None
+
+    raw_risk = int(risk_result.dataset_risk_score or 0)
+
+    latest = (
+        db.query(DatasetRiskHistory)
+        .filter(DatasetRiskHistory.dataset_id == dataset_id)
+        .order_by(DatasetRiskHistory.created_at.desc())
+        .first()
+    )
+
+    smoothed = (
+        int(latest.smoothed_score)
+        if latest is not None and latest.smoothed_score is not None
+        else raw_risk
+    )
+
+    health = max(0, min(100, 100 - smoothed))
+
+    delta = (
+        float(latest.delta_score)
+        if latest is not None and latest.delta_score is not None
+        else 0.0
+    )
+    accel = (
+        float(latest.accel_score)
+        if latest is not None and latest.accel_score is not None
+        else 0.0
+    )
+
+    trend = "stable"
+    if accel > 1.0:
+        trend = "deteriorating_fast"
+    elif accel < -1.0:
+        trend = "improving_fast"
+    elif delta > 2.0:
+        trend = "deteriorating"
+    elif delta < -2.0:
+        trend = "improving"
+
+    return {
+        "dataset_id": str(dataset_id),
+        "health_score": int(health),
+        "risk_score_smoothed": int(smoothed),
+        "risk_level": risk_result.risk_level,
+        "trend": trend,
+        "explain": {
+            "smoothed_score": smoothed,
+            "delta": delta,
+            "accel": accel,
+            "breakdown": risk_result.breakdown,
+        },
+    }
+
+
 def _risk_spike_cooldown_exists(db: Session, dataset_id) -> bool:
     cutoff = _now() - timedelta(minutes=RISK_SPIKE_COOLDOWN_MINUTES)
     q = (
@@ -339,19 +412,52 @@ def track_dataset_risk(db: Session, dataset_id) -> Optional[DatasetRiskHistory |
         .order_by(DatasetRiskHistory.created_at.desc())
         .first()
     )
+    now = _now()
 
     if last and last.smoothed_score is not None:
         previous_smoothed = int(last.smoothed_score)
     else:
         previous_smoothed = raw_score  # initialize baseline
 
+    intervals = 1.0
+    latest_created_at = None
+    if last:
+        latest_created_at = last.created_at
+        if latest_created_at.tzinfo is None:
+            latest_created_at = latest_created_at.replace(tzinfo=timezone.utc)
+
+        dt_seconds = max(0.0, (now - latest_created_at).total_seconds())
+        intervals = max(1.0, dt_seconds / float(RISK_TRACK_INTERVAL_MINUTES * 60))
+
+    alpha_eff = 1.0 - pow((1.0 - float(RISK_EMA_ALPHA)), float(intervals))
+    alpha_eff = max(RISK_ALPHA_MIN, min(RISK_ALPHA_MAX, alpha_eff))
+
     smoothed_score = int(
-        RISK_EMA_ALPHA * raw_score
-        + (1 - RISK_EMA_ALPHA) * previous_smoothed
+        round(alpha_eff * raw_score + (1.0 - alpha_eff) * previous_smoothed)
     )
 
+    latest_signal_ts = _get_latest_signal_timestamp(db, dataset_id)
+    if last and latest_signal_ts:
+        if latest_signal_ts.tzinfo is None:
+            latest_signal_ts = latest_signal_ts.replace(tzinfo=timezone.utc)
+        if latest_created_at is not None and latest_signal_ts <= latest_created_at:
+            stale_minutes = max(0.0, (now - latest_signal_ts).total_seconds() / 60.0)
+            if stale_minutes >= RISK_STALE_AFTER_MINUTES:
+                decay_factor = pow((1.0 - RISK_DECAY_PER_INTERVAL), intervals)
+                decayed = int(
+                    round(raw_score + (smoothed_score - raw_score) * decay_factor)
+                )
+                smoothed_score = max(raw_score, decayed)
+
     if last:
-        if last.risk_score == raw_score and last.risk_level == risk_level:
+        same_score = int(last.risk_score) == raw_score
+        same_level = (last.risk_level or "") == risk_level
+        same_breakdown = _stable_json(last.breakdown) == _stable_json(breakdown)
+        within_window = latest_created_at >= (
+            now - timedelta(minutes=RISK_TRACK_DEDUP_WINDOW_MINUTES)
+        )
+
+        if same_score and same_level and same_breakdown and within_window:
             logger.info(
                 "Risk unchanged - skipping history insert",
                 extra={"dataset_id": str(dataset_id)},
@@ -361,8 +467,12 @@ def track_dataset_risk(db: Session, dataset_id) -> Optional[DatasetRiskHistory |
                 "risk_score": raw_score,
                 "risk_level": risk_level,
                 "breakdown": breakdown,
+                "created_at": last.created_at,
                 "smoothed_score": int(last.smoothed_score) if last.smoothed_score is not None else smoothed_score,
-                "alpha": float(last.alpha) if last.alpha is not None else float(RISK_EMA_ALPHA),
+                "alpha": float(last.alpha) if last.alpha is not None else float(alpha_eff),
+                "alpha_used": float(alpha_eff),
+                "delta_score": float(last.delta_score) if last.delta_score is not None else None,
+                "accel_score": float(last.accel_score) if last.accel_score is not None else None,
                 "skipped": True,
             }
 
@@ -399,7 +509,7 @@ def track_dataset_risk(db: Session, dataset_id) -> Optional[DatasetRiskHistory |
         risk_level=risk_level,
         breakdown=breakdown,
         smoothed_score=smoothed_score,
-        alpha=RISK_EMA_ALPHA,
+        alpha=alpha_eff,
         delta_score=delta_score,
         accel_score=accel_score,
     )

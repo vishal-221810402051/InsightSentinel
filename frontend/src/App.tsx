@@ -11,7 +11,6 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Overview />} />
           <Route path="/datasets/:id" element={<DatasetDetail />} />
-          <Route path="/datasets/demo" element={<DatasetDetail />} />
         </Routes>
       </AppShell>
     </BrowserRouter>

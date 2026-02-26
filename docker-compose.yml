@@ -40,12 +40,10 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: insightsentinel-frontend
-    env_file:
-      - .env
     depends_on:
       - backend
     ports:
-      - "8501:8501"
+      - "3001:3000"
 
 volumes:
   postgres_data:
