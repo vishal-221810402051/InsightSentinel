@@ -6,16 +6,24 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.dataset_risk_history import DatasetRiskHistory
+from app.models.user import User
 from app.services.anomaly_engine import detect_latest_zscore_anomaly
+from app.services.dataset_access import get_owned_dataset
 from app.services.risk_engine import compute_dataset_risk, track_dataset_risk
 
 router = APIRouter(prefix="/datasets", tags=["risk"])
 
 
 @router.get("/{dataset_id}/risk")
-def get_dataset_risk(dataset_id: UUID, db: Session = Depends(get_db)):
+def get_dataset_risk(
+    dataset_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    get_owned_dataset(db, dataset_id, current_user.id)
     res = compute_dataset_risk(db, dataset_id)
     if res is None:
         raise HTTPException(status_code=404, detail="Dataset not found")
@@ -41,7 +49,12 @@ def get_dataset_risk(dataset_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.post("/{dataset_id}/risk/track")
-def track_risk(dataset_id: UUID, db: Session = Depends(get_db)):
+def track_risk(
+    dataset_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    get_owned_dataset(db, dataset_id, current_user.id)
     snap = track_dataset_risk(db, dataset_id)
     if snap is None:
         raise HTTPException(status_code=404, detail="Dataset not found")
@@ -69,7 +82,13 @@ def track_risk(dataset_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.get("/{dataset_id}/risk/history")
-def risk_history(dataset_id: UUID, limit: int = 100, db: Session = Depends(get_db)):
+def risk_history(
+    dataset_id: UUID,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    get_owned_dataset(db, dataset_id, current_user.id)
     limit = max(1, min(int(limit), 500))
 
     rows = (

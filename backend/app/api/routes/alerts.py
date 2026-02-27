@@ -3,28 +3,27 @@ from __future__ import annotations
 from typing import List
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.alert_event import AlertEvent
 from app.models.alert_rule import AlertRule
-from app.models.dataset import Dataset
+from app.models.user import User
 from app.schemas.alerts import AlertEventCreate, AlertEventOut, AlertRuleCreate, AlertRuleOut
+from app.services.dataset_access import get_owned_dataset
 
 router = APIRouter(prefix="/datasets/{dataset_id}/alerts", tags=["alerts"])
 
-
-def _ensure_dataset(db: Session, dataset_id: UUID) -> Dataset:
-    ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
-    if not ds:
-        raise HTTPException(status_code=404, detail="Dataset not found")
-    return ds
-
-
 @router.post("/rules", response_model=AlertRuleOut)
-def create_rule(dataset_id: UUID, payload: AlertRuleCreate, db: Session = Depends(get_db)):
-    _ensure_dataset(db, dataset_id)
+def create_rule(
+    dataset_id: UUID,
+    payload: AlertRuleCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    get_owned_dataset(db, dataset_id, current_user.id)
 
     rule = AlertRule(
         dataset_id=dataset_id,
@@ -41,8 +40,12 @@ def create_rule(dataset_id: UUID, payload: AlertRuleCreate, db: Session = Depend
 
 
 @router.get("/rules", response_model=List[AlertRuleOut])
-def list_rules(dataset_id: UUID, db: Session = Depends(get_db)):
-    _ensure_dataset(db, dataset_id)
+def list_rules(
+    dataset_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    get_owned_dataset(db, dataset_id, current_user.id)
     return (
         db.query(AlertRule)
         .filter(AlertRule.dataset_id == dataset_id)
@@ -52,8 +55,13 @@ def list_rules(dataset_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.get("/events", response_model=List[AlertEventOut])
-def list_events(dataset_id: UUID, limit: int = 50, db: Session = Depends(get_db)):
-    _ensure_dataset(db, dataset_id)
+def list_events(
+    dataset_id: UUID,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    get_owned_dataset(db, dataset_id, current_user.id)
     limit = max(1, min(limit, 500))
     return (
         db.query(AlertEvent)
@@ -66,8 +74,13 @@ def list_events(dataset_id: UUID, limit: int = 50, db: Session = Depends(get_db)
 
 # Optional but VERY useful for Phase 5A validation:
 @router.post("/events", response_model=AlertEventOut)
-def create_event(dataset_id: UUID, payload: AlertEventCreate, db: Session = Depends(get_db)):
-    _ensure_dataset(db, dataset_id)
+def create_event(
+    dataset_id: UUID,
+    payload: AlertEventCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    get_owned_dataset(db, dataset_id, current_user.id)
 
     ev = AlertEvent(
         dataset_id=dataset_id,

@@ -5,10 +5,11 @@ from typing import Any, Dict, List
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.models.dataset import Dataset
 from app.models.dataset_risk_history import DatasetRiskHistory
 
 
-def compute_portfolio_overview(db: Session, limit: int = 10) -> Dict[str, Any]:
+def compute_portfolio_overview(db: Session, owner_id, limit: int = 10) -> Dict[str, Any]:
     """
     Portfolio-level intelligence based on the latest risk snapshot per dataset:
       - top_risk: highest smoothed_score (fallback to risk_score)
@@ -24,6 +25,8 @@ def compute_portfolio_overview(db: Session, limit: int = 10) -> Dict[str, Any]:
             DatasetRiskHistory.dataset_id.label("dataset_id"),
             func.max(DatasetRiskHistory.created_at).label("max_ts"),
         )
+        .join(Dataset, Dataset.id == DatasetRiskHistory.dataset_id)
+        .filter(Dataset.owner_id == owner_id)
         .group_by(DatasetRiskHistory.dataset_id)
         .subquery()
     )
@@ -72,4 +75,3 @@ def compute_portfolio_overview(db: Session, limit: int = 10) -> Dict[str, Any]:
         "top_movers": top_movers,
         "fastest_accelerating": fastest_accel,
     }
-

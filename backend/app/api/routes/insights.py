@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_user
 from app.db.session import get_db
-from app.models import Dataset
 from app.models.dataset_insight import DatasetInsight
+from app.models.user import User
 from app.schemas.insight import DatasetInsightsResponseOut
+from app.services.dataset_access import get_owned_dataset
 from app.services.insights_engine import refresh_insights
 
 router = APIRouter(prefix="/datasets", tags=["insights"])
@@ -19,10 +21,9 @@ def get_dataset_insights(
     dataset_id: uuid.UUID,
     refresh: bool = Query(False, description="Recompute insights before returning"),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    dataset_exists = db.query(Dataset.id).filter(Dataset.id == dataset_id).first()
-    if not dataset_exists:
-        raise HTTPException(status_code=404, detail="Dataset not found")
+    get_owned_dataset(db, dataset_id, current_user.id)
 
     items = (
         refresh_insights(db, dataset_id)

@@ -6,15 +6,27 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_user
 from app.db.session import get_db
-from app.models import IngestionRun
+from app.models import Dataset, IngestionRun
+from app.models.user import User
+from app.services.dataset_access import get_owned_dataset
 
 router = APIRouter()
 
 
 @router.get("/{run_id}")
-def get_run(run_id: UUID, db: Session = Depends(get_db)) -> dict:
-    run = db.query(IngestionRun).filter(IngestionRun.id == run_id).first()
+def get_run(
+    run_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    run = (
+        db.query(IngestionRun)
+        .join(Dataset, Dataset.id == IngestionRun.dataset_id)
+        .filter(IngestionRun.id == run_id, Dataset.owner_id == current_user.id)
+        .first()
+    )
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
 
@@ -36,9 +48,15 @@ def list_runs(
     dataset_id: Optional[UUID] = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> list[dict]:
-    q = db.query(IngestionRun)
+    q = (
+        db.query(IngestionRun)
+        .join(Dataset, Dataset.id == IngestionRun.dataset_id)
+        .filter(Dataset.owner_id == current_user.id)
+    )
     if dataset_id:
+        get_owned_dataset(db, dataset_id, current_user.id)
         q = q.filter(IngestionRun.dataset_id == dataset_id)
 
     runs = q.order_by(IngestionRun.created_at.desc()).limit(limit).all()

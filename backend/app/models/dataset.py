@@ -21,12 +21,13 @@ class Dataset(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    user_id = Column(
+    owner_id = Column(
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=True,
+        nullable=False,
         index=True,
     )
+    owner = relationship("User")
     columns = relationship(
         "DatasetColumn",
         back_populates="dataset",

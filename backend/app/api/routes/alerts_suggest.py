@@ -5,9 +5,12 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_user
 from app.db.session import get_db
+from app.models.user import User
 from app.schemas.alerts_suggestions import AlertSuggestionsResponse, AlertRuleSuggestion
 from app.services.alert_suggestion_engine import build_alert_suggestions
+from app.services.dataset_access import get_owned_dataset
 
 router = APIRouter(prefix="/datasets", tags=["alerts"])
 
@@ -17,7 +20,9 @@ def get_alert_suggestions(
     dataset_id: UUID,
     limit: int = Query(10, ge=1, le=50),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
+    get_owned_dataset(db, dataset_id, current_user.id)
     suggestions = build_alert_suggestions(db, dataset_id, limit=limit)
 
     out = [

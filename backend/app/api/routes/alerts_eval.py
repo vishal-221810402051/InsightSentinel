@@ -5,14 +5,22 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from app.api.deps import get_current_user
 from app.db.session import get_db
+from app.models.user import User
 from app.services.alert_engine import evaluate_dataset_rules
+from app.services.dataset_access import get_owned_dataset
 
 router = APIRouter(prefix="/datasets", tags=["alerts"])
 
 
 @router.post("/{dataset_id}/alerts/evaluate")
-def evaluate_alerts(dataset_id: UUID, db: Session = Depends(get_db)):
+def evaluate_alerts(
+    dataset_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    get_owned_dataset(db, dataset_id, current_user.id)
     summary = evaluate_dataset_rules(db, dataset_id)
     return {
         "dataset_id": str(dataset_id),

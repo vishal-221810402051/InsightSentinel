@@ -119,7 +119,7 @@ async def ingest_csv(
         description=description,
         row_count=row_count,
         column_count=column_count,
-        user_id=current_user.id,
+        owner_id=current_user.id,
     )
     db.add(dataset)
     db.flush()  # dataset.id available

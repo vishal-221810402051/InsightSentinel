@@ -13,6 +13,7 @@ from app.models.dataset_preview import DatasetPreview
 from app.models.user import User
 from app.schemas.dataset import DatasetListOut, DatasetOut
 from app.schemas.preview import DatasetPreviewOut
+from app.services.dataset_access import get_owned_dataset
 
 logger = logging.getLogger("insightsentinel")
 
@@ -26,7 +27,7 @@ def list_datasets(
 ) -> list[DatasetListOut]:
     rows = (
         db.query(Dataset)
-        .filter(Dataset.user_id == current_user.id)
+        .filter(Dataset.owner_id == current_user.id)
         .order_by(Dataset.created_at.desc())
         .all()
     )
@@ -39,10 +40,11 @@ def get_dataset(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> DatasetOut:
+    get_owned_dataset(db, dataset_id, current_user.id)
     dataset = (
         db.query(Dataset)
         .options(joinedload(Dataset.columns).joinedload(DatasetColumn.statistics))
-        .filter(Dataset.id == dataset_id, Dataset.user_id == current_user.id)
+        .filter(Dataset.id == dataset_id, Dataset.owner_id == current_user.id)
         .first()
     )
 
@@ -59,13 +61,7 @@ def get_dataset_preview(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> DatasetPreviewOut:
-    owned_dataset = (
-        db.query(Dataset)
-        .filter(Dataset.id == dataset_id, Dataset.user_id == current_user.id)
-        .first()
-    )
-    if not owned_dataset:
-        raise HTTPException(status_code=404, detail="Dataset not found")
+    get_owned_dataset(db, dataset_id, current_user.id)
 
     preview = (
         db.query(DatasetPreview)
