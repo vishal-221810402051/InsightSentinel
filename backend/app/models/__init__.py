@@ -4,6 +4,7 @@ from app.models.ingestion_run import IngestionRun
 from app.models.column_statistics import ColumnStatistics
 from app.models.dataset_preview import DatasetPreview
 from app.models.dataset_insight import DatasetInsight
+from app.models.dataset_snapshot import DatasetSnapshot
 from app.models.alert_rule import AlertRule
 from app.models.alert_event import AlertEvent
 from app.models.dataset_risk_history import DatasetRiskHistory
@@ -16,6 +17,7 @@ __all__ = [
     "ColumnStatistics",
     "DatasetPreview",
     "DatasetInsight",
+    "DatasetSnapshot",
     "AlertRule",
     "AlertEvent",
     "DatasetRiskHistory",
