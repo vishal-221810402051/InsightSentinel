@@ -12,7 +12,13 @@ from pandas.api.types import is_numeric_dtype
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
-from app.models import Dataset, DatasetColumn, IngestionRun, ColumnStatistics
+from app.models import (
+    Dataset,
+    DatasetSnapshot,
+    IngestionRun,
+    SnapshotColumn,
+    SnapshotStatistics,
+)
 from app.models.dataset_preview import DatasetPreview
 from app.models.user import User
 from app.services.alert_engine import evaluate_dataset_rules
@@ -124,6 +130,15 @@ async def ingest_csv(
     db.add(dataset)
     db.flush()  # dataset.id available
 
+    snapshot = DatasetSnapshot(
+        dataset_id=dataset.id,
+        row_count=row_count,
+        column_count=column_count,
+        source_file=file.filename,
+    )
+    db.add(snapshot)
+    db.flush()  # snapshot.id available
+
     # PREVIEW: persist first N rows now (JSON-safe: no NaN/Infinity)
     preview_df = df.head(PREVIEW_ROWS).copy()
 
@@ -184,8 +199,8 @@ async def ingest_csv(
             null_count = int(s.isna().sum())
             distinct_count = int(s.dropna().astype(str).nunique())
 
-            col_obj = DatasetColumn(
-                dataset_id=dataset.id,
+            col_obj = SnapshotColumn(
+                snapshot_id=snapshot.id,
                 name=str(col),
                 dtype=str(s.dtype),
                 null_count=null_count,
@@ -199,8 +214,8 @@ async def ingest_csv(
                 stats = _compute_numeric_stats(s)
                 if stats is not None:
                     db.add(
-                        ColumnStatistics(
-                            column_id=col_obj.id,
+                        SnapshotStatistics(
+                            snapshot_column_id=col_obj.id,
                             mean=stats["mean"],
                             std=stats["std"],
                             min=stats["min"],
@@ -236,6 +251,7 @@ async def ingest_csv(
 
         return {
             "dataset_id": str(dataset.id),
+            "snapshot_id": str(snapshot.id),
             "run_id": str(run.id),
             "name": dataset.name,
             "description": dataset.description,

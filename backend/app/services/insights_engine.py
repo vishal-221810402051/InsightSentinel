@@ -1,13 +1,20 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
 import re
 from typing import Any, List, Optional
 
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session
 
-from app.models import ColumnStatistics, Dataset, DatasetColumn
+from app.models import (
+    ColumnStatistics,
+    Dataset,
+    DatasetColumn,
+    DatasetSnapshot,
+    SnapshotColumn,
+    SnapshotStatistics,
+)
 from app.models.dataset_insight import DatasetInsight
 from app.models.dataset_preview import DatasetPreview
 
@@ -132,14 +139,44 @@ def _try_parse_datetime(v: Any) -> Optional[datetime]:
 
 
 def refresh_insights(db: Session, dataset_id) -> list[DatasetInsight]:
-    dataset = (
-        db.query(Dataset)
-        .options(joinedload(Dataset.columns).joinedload(DatasetColumn.statistics))
-        .filter(Dataset.id == dataset_id)
-        .first()
-    )
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset:
         return []
+
+    latest_snapshot = (
+        db.query(DatasetSnapshot)
+        .filter(DatasetSnapshot.dataset_id == dataset_id)
+        .order_by(DatasetSnapshot.created_at.desc())
+        .first()
+    )
+
+    cols_are_snapshot = latest_snapshot is not None
+    snapshot_stats_by_col_id: dict[str, SnapshotStatistics] = {}
+    columns: list[Any]
+
+    if latest_snapshot is not None:
+        columns = (
+            db.query(SnapshotColumn)
+            .filter(SnapshotColumn.snapshot_id == latest_snapshot.id)
+            .all()
+        )
+        col_ids = [c.id for c in columns]
+        if col_ids:
+            stats_rows = (
+                db.query(SnapshotStatistics)
+                .filter(SnapshotStatistics.snapshot_column_id.in_(col_ids))
+                .all()
+            )
+            snapshot_stats_by_col_id = {
+                str(s.snapshot_column_id): s for s in stats_rows
+            }
+    else:
+        # Backward compatibility for datasets profiled before snapshot tables.
+        columns = (
+            db.query(DatasetColumn)
+            .filter(DatasetColumn.dataset_id == dataset_id)
+            .all()
+        )
 
     preview = (
         db.query(DatasetPreview)
@@ -222,7 +259,8 @@ def refresh_insights(db: Session, dataset_id) -> list[DatasetInsight]:
         )
 
     row_count = max(int(dataset.row_count or 0), 0)
-    for col in dataset.columns:
+    for col in columns:
+        insight_col_id = None if cols_are_snapshot else col.id
         # --- HIGH_NULL_RATIO ---
         if row_count > 0:
             null_ratio = (col.null_count or 0) / row_count
@@ -231,7 +269,7 @@ def refresh_insights(db: Session, dataset_id) -> list[DatasetInsight]:
                 insights.append(
                     DatasetInsight(
                         dataset_id=dataset.id,
-                        column_id=col.id,
+                        column_id=insight_col_id,
                         severity=severity,
                         code="HIGH_NULL_RATIO",
                         title="High missing values",
@@ -244,7 +282,7 @@ def refresh_insights(db: Session, dataset_id) -> list[DatasetInsight]:
             insights.append(
                 DatasetInsight(
                     dataset_id=dataset.id,
-                    column_id=col.id,
+                    column_id=insight_col_id,
                     severity="warning",
                     code="CONSTANT_COLUMN",
                     title="Constant column",
@@ -275,7 +313,7 @@ def refresh_insights(db: Session, dataset_id) -> list[DatasetInsight]:
                     insights.append(
                         DatasetInsight(
                             dataset_id=dataset.id,
-                            column_id=col.id,
+                            column_id=insight_col_id,
                             severity="warning",
                             code="POTENTIAL_NUMERIC_AS_STRING",
                             title="Numeric values stored as text",
@@ -299,7 +337,7 @@ def refresh_insights(db: Session, dataset_id) -> list[DatasetInsight]:
                 insights.append(
                     DatasetInsight(
                         dataset_id=dataset.id,
-                        column_id=col.id,
+                        column_id=insight_col_id,
                         severity="info",
                         code="LOW_CARDINALITY",
                         title="Low cardinality",
@@ -317,7 +355,7 @@ def refresh_insights(db: Session, dataset_id) -> list[DatasetInsight]:
                 insights.append(
                     DatasetInsight(
                         dataset_id=dataset.id,
-                        column_id=col.id,
+                        column_id=insight_col_id,
                         severity="warning",
                         code="HIGH_CARDINALITY",
                         title="High cardinality categorical column",
@@ -334,7 +372,7 @@ def refresh_insights(db: Session, dataset_id) -> list[DatasetInsight]:
                 insights.append(
                     DatasetInsight(
                         dataset_id=dataset.id,
-                        column_id=col.id,
+                        column_id=insight_col_id,
                         severity="warning",
                         code="LIKELY_IDENTIFIER",
                         title="Likely identifier column",
@@ -363,7 +401,7 @@ def refresh_insights(db: Session, dataset_id) -> list[DatasetInsight]:
                     insights.append(
                         DatasetInsight(
                             dataset_id=dataset.id,
-                            column_id=col.id,
+                            column_id=insight_col_id,
                             severity="warning",
                             code="DATE_PARSE_FAILURE",
                             title="Date/time parse failures",
@@ -388,7 +426,7 @@ def refresh_insights(db: Session, dataset_id) -> list[DatasetInsight]:
                     insights.append(
                         DatasetInsight(
                             dataset_id=dataset.id,
-                            column_id=col.id,
+                            column_id=insight_col_id,
                             severity="warning",
                             code="MIXED_DATE_FORMATS",
                             title="Mixed date formats detected",
@@ -407,7 +445,7 @@ def refresh_insights(db: Session, dataset_id) -> list[DatasetInsight]:
                     insights.append(
                         DatasetInsight(
                             dataset_id=dataset.id,
-                            column_id=col.id,
+                            column_id=insight_col_id,
                             severity="info",
                             code="FUTURE_DATES_IN_PREVIEW",
                             title="Future dates found (preview)",
@@ -418,8 +456,12 @@ def refresh_insights(db: Session, dataset_id) -> list[DatasetInsight]:
                         )
                     )
 
-        # --- Stats-based rules (needs ColumnStatistics) ---
-        st: ColumnStatistics | None = getattr(col, "statistics", None)
+        # --- Stats-based rules ---
+        st: ColumnStatistics | SnapshotStatistics | None = (
+            snapshot_stats_by_col_id.get(str(col.id))
+            if cols_are_snapshot
+            else getattr(col, "statistics", None)
+        )
         if st:
             # OUTLIERS_DETECTED
             if st.outlier_ratio is not None and st.outlier_ratio >= 0.05:
@@ -428,7 +470,7 @@ def refresh_insights(db: Session, dataset_id) -> list[DatasetInsight]:
                 insights.append(
                     DatasetInsight(
                         dataset_id=dataset.id,
-                        column_id=col.id,
+                        column_id=insight_col_id,
                         severity=severity,
                         code="OUTLIERS_DETECTED",
                         title="Outliers detected",
@@ -451,7 +493,7 @@ def refresh_insights(db: Session, dataset_id) -> list[DatasetInsight]:
                     insights.append(
                         DatasetInsight(
                             dataset_id=dataset.id,
-                            column_id=col.id,
+                            column_id=insight_col_id,
                             severity=sev,
                             code="SKEWED_DISTRIBUTION",
                             title="Skewed distribution",
@@ -468,7 +510,7 @@ def refresh_insights(db: Session, dataset_id) -> list[DatasetInsight]:
                     insights.append(
                         DatasetInsight(
                             dataset_id=dataset.id,
-                            column_id=col.id,
+                            column_id=insight_col_id,
                             severity="info",
                             code="NUMERIC_RANGE_SUSPICIOUS",
                             title="Zero numeric range",
@@ -479,7 +521,7 @@ def refresh_insights(db: Session, dataset_id) -> list[DatasetInsight]:
                     insights.append(
                         DatasetInsight(
                             dataset_id=dataset.id,
-                            column_id=col.id,
+                            column_id=insight_col_id,
                             severity="warning",
                             code="NUMERIC_RANGE_SUSPICIOUS",
                             title="All values non-positive",
