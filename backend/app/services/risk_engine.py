@@ -8,10 +8,10 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
-from app.models import Dataset, DatasetColumn, DatasetInsight
+from app.models import Dataset, DatasetInsight
 from app.models.alert_event import AlertEvent
-from app.models.column_statistics import ColumnStatistics
 from app.models.dataset_risk_history import DatasetRiskHistory
+from app.services.snapshot_context import get_latest_snapshot_profile_context
 
 logger = logging.getLogger("insightsentinel.risk")
 
@@ -100,20 +100,10 @@ def compute_dataset_risk(db: Session, dataset_id) -> Optional[RiskScoreResult]:
         .all()
     )
 
-    columns = (
-        db.query(DatasetColumn)
-        .filter(DatasetColumn.dataset_id == dataset_id)
-        .all()
+    snapshot, columns_by_name, stats_by_col_id = get_latest_snapshot_profile_context(
+        db, dataset_id
     )
-    cols_by_id = {str(c.id): c for c in columns}
-
-    stats = (
-        db.query(ColumnStatistics)
-        .join(DatasetColumn, DatasetColumn.id == ColumnStatistics.column_id)
-        .filter(DatasetColumn.dataset_id == dataset_id)
-        .all()
-    )
-    stats_by_col_id = {str(s.column_id): s for s in stats}
+    cols_by_id = {str(c.id): c for c in columns_by_name.values()}
 
     # Recent alerts (24h)
     cutoff = _now() - timedelta(hours=24)
@@ -124,7 +114,7 @@ def compute_dataset_risk(db: Session, dataset_id) -> Optional[RiskScoreResult]:
         .count()
     )
 
-    row_count = int(ds.row_count or 0)
+    row_count = int(snapshot.row_count if snapshot is not None else (ds.row_count or 0))
 
     # --- 1) Insight Risk ---
     insight_score = 0

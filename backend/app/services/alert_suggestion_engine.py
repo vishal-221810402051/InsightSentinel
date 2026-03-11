@@ -7,10 +7,9 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.models.alert_rule import AlertRule
-from app.models.column_statistics import ColumnStatistics
 from app.models.dataset import Dataset
-from app.models.dataset_column import DatasetColumn
 from app.models.dataset_insight import DatasetInsight
+from app.services.snapshot_context import get_latest_snapshot_profile_context
 
 
 def _canon_config(cfg: dict[str, Any]) -> str:
@@ -44,18 +43,12 @@ def build_alert_suggestions(db: Session, dataset_id, limit: int = 10) -> list[Su
         cfg = r.config if isinstance(r.config, dict) else {}
         existing_keys.add((r.rule_type, _canon_config(cfg)))
 
-    # Pull columns + stats
-    columns = db.query(DatasetColumn).filter(DatasetColumn.dataset_id == dataset_id).all()
-    cols_by_id = {str(c.id): c for c in columns}
-    cols_by_name = {c.name: c for c in columns}
-
-    stats = (
-        db.query(ColumnStatistics)
-        .join(DatasetColumn, DatasetColumn.id == ColumnStatistics.column_id)
-        .filter(DatasetColumn.dataset_id == dataset_id)
-        .all()
+    # Pull latest snapshot-backed profile context (with legacy fallback).
+    snapshot, cols_by_name, stats_by_col_id = get_latest_snapshot_profile_context(
+        db, dataset_id
     )
-    stats_by_col_id = {str(s.column_id): s for s in stats}
+    columns = list(cols_by_name.values())
+    cols_by_id = {str(c.id): c for c in columns}
 
     # Pull insights
     insights = (
@@ -80,7 +73,7 @@ def build_alert_suggestions(db: Session, dataset_id, limit: int = 10) -> list[Su
         suggestions.append(s)
         existing_keys.add(key)
 
-    row_count = int(dataset.row_count or 0)
+    row_count = int(snapshot.row_count if snapshot is not None else (dataset.row_count or 0))
 
     # ----------------------------
     # High-signal proposals (not spam)

@@ -10,11 +10,11 @@ from sqlalchemy.orm import Session
 
 from app.models.alert_event import AlertEvent
 from app.models.alert_rule import AlertRule
-from app.models.column_statistics import ColumnStatistics
 from app.models.dataset import Dataset
 from app.models.dataset_column import DatasetColumn
 from app.models.dataset_insight import DatasetInsight
 from app.models.dataset_preview import DatasetPreview
+from app.services.snapshot_context import get_latest_snapshot_profile_context
 
 _USE_STRATEGY = True
 _COOLDOWN_MINUTES = 10
@@ -377,18 +377,19 @@ def evaluate_alerts_for_dataset(db: Session, dataset_id) -> AlertEvalSummary:
 
     preview = db.query(DatasetPreview).filter(DatasetPreview.dataset_id == dataset_id).first()
     preview_rows = preview.rows if preview and preview.rows else []
-    columns = db.query(DatasetColumn).filter(DatasetColumn.dataset_id == dataset_id).all()
-    stats = (
-        db.query(ColumnStatistics)
-        .join(DatasetColumn, DatasetColumn.id == ColumnStatistics.column_id)
-        .filter(DatasetColumn.dataset_id == dataset_id)
-        .all()
+    snapshot, columns_by_name, stats_by_col_id = get_latest_snapshot_profile_context(
+        db, dataset_id
     )
+
+    row_count = int(dataset.row_count or 0)
+    if snapshot is not None:
+        row_count = int(snapshot.row_count or 0)
+
     ctx = RuleContext(
-        row_count=int(dataset.row_count or 0),
+        row_count=row_count,
         preview_rows=preview_rows,
-        columns_by_name={c.name: c for c in columns},
-        stats_by_col_id={str(s.column_id): s for s in stats},
+        columns_by_name=columns_by_name,
+        stats_by_col_id=stats_by_col_id,
     )
 
     for rule in rules:
