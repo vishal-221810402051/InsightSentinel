@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 from io import BytesIO
 from typing import Any
@@ -22,6 +23,7 @@ from app.models import (
 from app.models.dataset_preview import DatasetPreview
 from app.models.user import User
 from app.services.alert_engine import evaluate_dataset_rules
+from app.services.dataset_access import get_owned_dataset
 
 from app.db.session import get_db
 
@@ -95,7 +97,8 @@ def _compute_numeric_stats(s: pd.Series) -> dict[str, Any] | None:
 
 @router.post("/csv")
 async def ingest_csv(
-    dataset_name: str = Form(...),
+    dataset_name: str | None = Form(None),
+    dataset_id: uuid.UUID | None = Form(None),
     description: str = Form(""),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -119,15 +122,30 @@ async def ingest_csv(
     row_count = int(df.shape[0])
     column_count = int(df.shape[1])
 
-    # STEP 1: create dataset
-    dataset = Dataset(
-        name=dataset_name,
-        description=description,
-        row_count=row_count,
-        column_count=column_count,
-        owner_id=current_user.id,
-    )
-    db.add(dataset)
+    # STEP 1: resolve monitored dataset mode
+    if dataset_id is not None:
+        dataset = get_owned_dataset(db, dataset_id, current_user.id)
+        # Keep root-level counters aligned with the latest snapshot for backward compatibility.
+        dataset.row_count = row_count
+        dataset.column_count = column_count
+        db.add(dataset)
+    else:
+        dataset_name_clean = (dataset_name or "").strip()
+        if not dataset_name_clean:
+            raise HTTPException(
+                status_code=400,
+                detail="Either dataset_id or dataset_name is required",
+            )
+
+        dataset = Dataset(
+            name=dataset_name_clean,
+            description=description,
+            row_count=row_count,
+            column_count=column_count,
+            owner_id=current_user.id,
+        )
+        db.add(dataset)
+
     db.flush()  # dataset.id available
 
     snapshot = DatasetSnapshot(
@@ -170,7 +188,16 @@ async def ingest_csv(
                 clean[k] = v
         preview_rows.append(clean)
 
-    db.add(DatasetPreview(dataset_id=dataset.id, rows=preview_rows))
+    existing_preview = (
+        db.query(DatasetPreview)
+        .filter(DatasetPreview.dataset_id == dataset.id)
+        .first()
+    )
+    if existing_preview:
+        existing_preview.rows = preview_rows
+        db.add(existing_preview)
+    else:
+        db.add(DatasetPreview(dataset_id=dataset.id, rows=preview_rows))
 
     # STEP 2: create run early
     run = IngestionRun(
